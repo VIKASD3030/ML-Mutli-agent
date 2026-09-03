@@ -1,3 +1,4 @@
+# --- Core pipeline ---
 pydantic>=2.0
 pandas
 numpy
@@ -5,3 +6,38 @@ scikit-learn
 optuna
 openai
 python-dotenv
+
+# --- API layer ---
+# uvicorn is the ASGI server; without it `python -m uvicorn` fails with
+# "No module named uvicorn" even though FastAPI itself imports fine.
+fastapi
+uvicorn[standard]
+# Required by FastAPI to parse multipart/form-data. api/routes/uploads.py
+# takes an UploadFile, and FastAPI raises at import/startup without this —
+# it is NOT pulled in by fastapi itself.
+python-multipart
+# core/config.py's Settings class. Split out of pydantic in v2.
+pydantic-settings
+
+# Parquet engine for pandas. api/routes/uploads.py accepts ".parquet" and
+# data_peek_tools.py advertises it, but pandas has NO parquet support without
+# an engine — a parquet upload 500s with a raw ImportError otherwise.
+pyarrow
+
+# --- Persistence ---
+SQLAlchemy
+# psycopg v3 (NOT psycopg2) — core/config.py's default database_url uses the
+# "postgresql+psycopg://" dialect, which resolves specifically to psycopg 3.
+psycopg[binary]
+
+# --- Test harness UI (streamlit_app.py) ---
+# Talks to the API over HTTP only; it does not import the pipeline, except for
+# the metric-name constants in schemas/problem_spec.py so the form's dropdowns
+# cannot drift out of sync with ProblemSpec's own validator.
+streamlit
+requests
+
+# --- Dev / test ---
+# Test/ is a real pytest suite (unit + integration) and was previously
+# undeclared, so a fresh checkout could not run the tests.
+pytest
