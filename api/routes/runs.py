@@ -67,6 +67,13 @@ def create_run(
                 question_for_user=result.question_for_user,
             )
         spec = result
+        if request.constraints is not None:
+            # exclude_unset: only the constraints the client actually sent
+            # replace the agent-extracted spec's defaults.
+            overrides = request.constraints.model_dump(exclude_unset=True)
+            spec = spec.model_copy(
+                update={"constraints": spec.constraints.model_copy(update=overrides)}
+            )
 
     run_id = str(uuid.uuid4())
 

@@ -17,6 +17,8 @@ from schemas.dataset_peek import ColumnPeek, DatasetPeek
 
 SUPPORTED_EXTENSIONS = (".csv", ".parquet")
 MAX_EXAMPLE_VALUES =5
+BUILTIN_BREAST_CANCER = "builtin:breast_cancer"
+BUILTIN_TARGET_NAME = "diagnosis"
 
 def peek_dataset_tool(file_path: str) -> DatasetPeek:
     """Read a file's schema without cleaning or full processing.
@@ -40,6 +42,8 @@ def peek_dataset_tool(file_path: str) -> DatasetPeek:
         discipline as load_data()'s own unsupported-source guard, rather
         than a silent best-effort attempt.
     """
+    if file_path == BUILTIN_BREAST_CANCER:
+        return peek_dataframe(load_builtin_breast_cancer_frame())
     if file_path.endswith(".csv"):
         df = pd.read_csv(file_path)
     elif file_path.endswith(".parquet"):
@@ -49,6 +53,22 @@ def peek_dataset_tool(file_path: str) -> DatasetPeek:
             f"Unsupported file type: {file_path!r}."
             f"Supported extensions: {SUPPORTED_EXTENSIONS}"
         )
+    return peek_dataframe(df)
+
+
+def load_builtin_breast_cancer_frame() -> pd.DataFrame:
+    """sklearn's breast-cancer frame with its generic `target` column
+    renamed to BUILTIN_TARGET_NAME. load_data() renames `target` to
+    whatever spec.target_column is, so any name works downstream — the
+    peek just shows a human-meaningful one so a user can say "predict
+    diagnosis" and have it validate against the peeked columns."""
+    from sklearn.datasets import load_breast_cancer
+
+    frame = load_breast_cancer(as_frame=True).frame.copy()
+    return frame.rename(columns={"target": BUILTIN_TARGET_NAME})
+
+
+def peek_dataframe(df: pd.DataFrame) -> DatasetPeek:
     columns: list[ColumnPeek] = []
     for col in df.columns:
         series = df[col]
@@ -66,4 +86,3 @@ def peek_dataset_tool(file_path: str) -> DatasetPeek:
         )
 
     return DatasetPeek(row_count=len(df), column_count=len(df.columns), columns = columns)
-
