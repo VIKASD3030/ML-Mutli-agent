@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field, model_validator
 from schemas.data_profile import DataProfile
 from schemas.eda_report import EDAReport
 from schemas.evaluation_report import EvaluationReport
-from schemas.problem_spec import ProblemSpec
+from schemas.problem_spec import PipelineConstraints, ProblemSpec
 from schemas.pipeline_run import PipelineRun, HistoryEntry
 from schemas.trace_entry import TraceEntry
 from schemas.tuning_result import TuningResult
@@ -37,6 +37,9 @@ class RunCreateRequest(BaseModel):
     problem_spec: Optional[ProblemSpec] = None
     context: Optional[str] = None
     file_path: Optional[str] = None
+    # Overrides applied on top of the spec the Requirement Agent extracts
+    # (context mode). Only fields the client actually sent replace defaults.
+    constraints: Optional[PipelineConstraints] = None
 
     @model_validator(mode="after")
     def _exactly_one_input_mode(self) -> "RunCreateRequest":
