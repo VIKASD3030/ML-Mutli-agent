@@ -12,8 +12,8 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
-from pipeline.data_stage import clean_and_profile, load_data
-from pipeline.feature_stage import engineer_features
+from pipeline.data_stage import clean_and_profile, load_data, split_and_clean
+from pipeline.feature_stage import fit_features
 from pipeline.run_cache import RunCache
 from pipeline.tuning_stage import tune_hyperparameters
 from schemas.problem_spec import PipelineConstraints, ProblemSpec
@@ -28,6 +28,7 @@ def tune_model_tool(
     max_tuning_trials: Optional[int] = 25,
     cache: RunCache | None = None,
     run_id: str | None = None,
+    success_metric: str | None = None,
 ) -> TuningResult:
     """LLM-callable tool: load & clean data, engineer features, then search for optimal
     hyperparameters via cross-validated Optuna trials.
@@ -38,6 +39,10 @@ def tune_model_tool(
         Identical meaning to other pipeline tools — simple flat arguments.
     max_tuning_trials : int, optional
         Maximum trial budget allowed for hyperparameter search (default: 25).
+    success_metric : str, optional
+        The metric the search must optimise — pass the run's real
+        spec.success_metric so tuning and the final verdict agree. Only when
+        omitted does it fall back to accuracy / rmse.
 
     Returns
     -------
@@ -65,7 +70,8 @@ def tune_model_tool(
     spec = ProblemSpec(
         task_type=task_type,
         target_column=target_column,
-        success_metric="accuracy" if task_type == "classification" else "rmse",
+        success_metric=success_metric
+        or ("accuracy" if task_type == "classification" else "rmse"),
         metric_threshold=0.0,
         data_source=data_source,
         constraints=PipelineConstraints(max_tuning_trials=max_tuning_trials),
@@ -78,10 +84,12 @@ def tune_model_tool(
 
     if X is None or y is None:
         raw_df = load_data(spec)
-        cleaned_df, profile = clean_and_profile(raw_df, spec)
+        cleaned_df, profile = clean_and_profile(raw_df, spec, impute=False)
         if profile.blocking_issue is not None:
             raise PipelineBlockedError(stage="tuning_agent", reason=profile.blocking_issue)
 
-        X, y, _report = engineer_features(cleaned_df, profile, spec)
+        # Tune on TRAIN rows only; the test rows are never seen here.
+        train_df, _test_df = split_and_clean(cleaned_df, spec)
+        X, y, _report, _plan = fit_features(train_df, profile, spec)
 
     return tune_hyperparameters(X, y, spec)

@@ -76,7 +76,7 @@ def _distinct_tuning_result(n_estimators: int = 7) -> TuningResult:
 
 
 @pytest.fixture(scope="module")
-def real_features() -> tuple[pd.DataFrame, pd.Series]:
+def real_features() -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
     """The genuine engineered X/y for breast_cancer, computed once for the
     whole module. Built through the real feature tool so these tests train
     on exactly what the pipeline would hand the training stage."""
@@ -89,18 +89,23 @@ def real_features() -> tuple[pd.DataFrame, pd.Series]:
         cache=cache,
         run_id=run_id,
     )
-    return cache.get(run_id, "X"), cache.get(run_id, "y")
+    return (
+        cache.get(run_id, "X"), cache.get(run_id, "y"),
+        cache.get(run_id, "X_test"), cache.get(run_id, "y_test"),
+    )
 
 
 @pytest.fixture
 def cache_with_features(real_features) -> tuple[RunCache, str]:
     """A fresh cache per test, pre-loaded with the shared real features —
     the state engineer_features_tool() leaves behind in a live run."""
-    X, y = real_features
+    X, y, X_test, y_test = real_features
     cache = RunCache()
     run_id = "run-training-tools"
     cache.set(run_id, "X", X)
     cache.set(run_id, "y", y)
+    cache.set(run_id, "X_test", X_test)
+    cache.set(run_id, "y_test", y_test)
     return cache, run_id
 
 
@@ -193,7 +198,7 @@ def test_supplied_tuning_result_actually_trains_the_model(cache_with_features, r
     the SUPPLIED params. Had it re-run the search, the model would have
     had 50-300 trees and the numbers would not line up."""
     cache, run_id = cache_with_features
-    X, y = real_features
+    X, y, X_test, y_test = real_features
     tuning = _distinct_tuning_result(n_estimators=7)
 
     from_tool = train_and_evaluate_tool(
@@ -207,7 +212,9 @@ def test_supplied_tuning_result_actually_trains_the_model(cache_with_features, r
         tuning_result=tuning,
     )
 
-    _model, expected = train_and_evaluate(X, y, _spec(0.90), tuning)
+    _model, expected = train_and_evaluate(
+        X, y, _spec(0.90), tuning, X_test=X_test, y_test=y_test
+    )
 
     assert from_tool.metric_value == expected.metric_value
     assert from_tool.test_metrics == expected.test_metrics
@@ -328,7 +335,7 @@ def test_cache_hit_requires_both_x_and_y(real_features):
     """Half a hit must fall through to the recompute branch, which against
     an unloadable source surfaces as ValueError rather than reaching
     train_and_evaluate() with y=None."""
-    X, _y = real_features
+    X, _y, _X_test, _y_test = real_features
     cache = RunCache()
     run_id = "run-half-cached"
     cache.set(run_id, "X", X)  # deliberately no "y"

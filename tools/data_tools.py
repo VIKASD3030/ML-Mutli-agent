@@ -111,6 +111,11 @@ def profile_dataset_tool(
         raise PipelineBlockedError(stage="data_agent", reason=profile.blocking_issue)
     
     if cache is not None and run_id is not None:
-        cache.set(run_id, "cleaned_df", cleaned_df)
+        # The profile above describes imputation done over all rows, which is
+        # fine for a description. The frame cached for the next stages must
+        # NOT be imputed that way: they split first and impute from train
+        # rows only (data_stage.split_and_clean), or test rows would shape
+        # the fill values. So cache the cleaned-but-not-imputed frame.
+        cache.set(run_id, "cleaned_df", clean_and_profile(raw_df, spec, impute=False)[0])
 
     return profile

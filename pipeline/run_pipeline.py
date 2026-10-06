@@ -93,6 +93,7 @@ def run(
             data_source=spec.data_source, target_column=spec.target_column,
             task_type=spec.task_type, max_tuning_trials=spec.constraints.max_tuning_trials,
             pipeline_run=run_state, cache=cache,
+            success_metric=spec.success_metric,
         )
         _sync()
 

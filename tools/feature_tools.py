@@ -19,8 +19,8 @@ from typing import Literal
 
 import pandas as pd
 
-from pipeline.data_stage import clean_and_profile, load_data
-from pipeline.feature_stage import engineer_features
+from pipeline.data_stage import clean_and_profile, load_data, split_and_clean
+from pipeline.feature_stage import apply_features, fit_features
 from pipeline.run_cache import RunCache
 from schemas.data_profile import DataProfile
 from schemas.eda_report import EDAReport
@@ -88,7 +88,9 @@ def engineer_features_tool(
     # skip recompute, so treat it as a miss rather than half-using stale data.
     if cleaned_df is None or profile is None:
         raw_df = load_data(spec)
-        cleaned_df, profile = clean_and_profile(raw_df, spec)
+        # impute=False: the frame kept for splitting must not carry fill
+        # values computed from test rows (the profile still describes them).
+        cleaned_df, profile = clean_and_profile(raw_df, spec, impute=False)
         if profile.blocking_issue is not None:
             raise PipelineBlockedError(stage="feature_agent", reason=profile.blocking_issue)
         # Populate the cache even on a miss, so a LATER call in the same
@@ -97,7 +99,11 @@ def engineer_features_tool(
         if cache is not None and run_id is not None:
             cache.set(run_id, "cleaned_df", cleaned_df)
 
-    X, y, report = engineer_features(cleaned_df, profile, spec)
+    # One split, then everything is decided on train rows only; the test
+    # rows are only transformed with what train taught.
+    train_df, test_df = split_and_clean(cleaned_df, spec)
+    X, y, report, plan = fit_features(train_df, profile, spec)
+    X_test, y_test = apply_features(test_df, plan, spec)
 
     # THE FIX for bug #3 — this is what makes Tuning/Training's cache
     # reads actually hit, ever. Without this, every downstream "if cache
@@ -105,5 +111,7 @@ def engineer_features_tool(
     if cache is not None and run_id is not None:
         cache.set(run_id, "X", X)
         cache.set(run_id, "y", y)
+        cache.set(run_id, "X_test", X_test)
+        cache.set(run_id, "y_test", y_test)
 
     return report

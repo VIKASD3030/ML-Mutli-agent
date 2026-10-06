@@ -82,7 +82,7 @@ def _cheap_tuning_result() -> TuningResult:
 
 
 @pytest.fixture(scope="module")
-def real_features() -> tuple[pd.DataFrame, pd.Series]:
+def real_features() -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
     """The genuine engineered features, computed once for the module.
     Real data matters here: pass_fail is a judgement about realistic
     performance, and a toy separable set would score 1.0 and make the
@@ -96,7 +96,10 @@ def real_features() -> tuple[pd.DataFrame, pd.Series]:
         cache=cache,
         run_id=run_id,
     )
-    return cache.get(run_id, "X"), cache.get(run_id, "y")
+    return (
+        cache.get(run_id, "X"), cache.get(run_id, "y"),
+        cache.get(run_id, "X_test"), cache.get(run_id, "y_test"),
+    )
 
 
 @pytest.fixture
@@ -104,11 +107,13 @@ def primed_run(real_features) -> tuple[PipelineRun, RunCache]:
     """A PipelineRun and cache in the state the first three agents leave
     behind: X/y cached, and tuning_result already on the run. Together
     these let TrainingAgent skip everything except the final fit."""
-    X, y = real_features
+    X, y, X_test, y_test = real_features
     run_state = _make_run()
     cache = RunCache()
     cache.set(run_state.run_id, "X", X)
     cache.set(run_state.run_id, "y", y)
+    cache.set(run_state.run_id, "X_test", X_test)
+    cache.set(run_state.run_id, "y_test", y_test)
     run_state.tuning_result = _cheap_tuning_result()
     return run_state, cache
 
@@ -312,11 +317,13 @@ def test_missing_tuning_result_falls_back_to_searching(make_fake_client, real_fe
     """The mirror case: no prior TuningResult on the run means the tool
     must search once. The fallback has to keep working, since a
     standalone TrainingAgent call has no upstream stage to inherit from."""
-    X, y = real_features
+    X, y, X_test, y_test = real_features
     run_state = _make_run()
     cache = RunCache()
     cache.set(run_state.run_id, "X", X)
     cache.set(run_state.run_id, "y", y)
+    cache.set(run_state.run_id, "X_test", X_test)
+    cache.set(run_state.run_id, "y_test", y_test)
     assert run_state.tuning_result is None
 
     canned = _Judgment(summary="ok", agrees_with_rule_based_recommendation=None, concerns=[])

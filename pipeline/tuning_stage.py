@@ -12,6 +12,8 @@ import pandas as pd
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.model_selection import cross_val_score
 
+from pipeline.metrics import SEED, cv_scorer, cv_splitter
+
 from schemas.problem_spec import ProblemSpec
 from schemas.tuning_result import TrialRecord, TuningResult
 
@@ -52,9 +54,9 @@ def tune_hyperparameters(X: pd.DataFrame, y: pd.Series, spec: ProblemSpec) -> Tu
     # meaningless for class labels. This is the same task_type branching
     # pattern as class_balance in data_stage.py.
 
-    scoring = (
-        "f1_macro" if spec.task_type == "classification" else "neg_root_mean_squared_error"
-    )
+    # The scorer comes from the metric the user asked for (pipeline/metrics.py),
+    # so the search optimises the same thing the Training stage later judges.
+    scoring = cv_scorer(spec.success_metric)
 
      # Why "neg_" RMSE: scikit-learn's cross_val_score always maximizes the
     # scoring function internally. RMSE is an error metric — lower is
@@ -69,7 +71,9 @@ def tune_hyperparameters(X: pd.DataFrame, y: pd.Series, spec: ProblemSpec) -> Tu
         """Optuna calls this once per trial. Whatever this function
         returns is the number Optuna is trying to maximize."""
         model, params = _build_model(spec.task_type, trial)
-        scores = cross_val_score(model, X, y, cv=3, scoring=scoring)
+        scores = cross_val_score(
+            model, X, y, cv=cv_splitter(spec.task_type), scoring=scoring
+        )
         mean_score = float(scores.mean())
         # Log this trial immediately, not after the whole search finishes —
         # if the search crashes partway through, you still have a record
@@ -79,7 +83,10 @@ def tune_hyperparameters(X: pd.DataFrame, y: pd.Series, spec: ProblemSpec) -> Tu
         )
         return mean_score
 
-    study = optuna.create_study(direction="maximize")
+    # Seeded sampler: same data + same spec => same search, run after run.
+    study = optuna.create_study(
+        direction="maximize", sampler=optuna.samplers.TPESampler(seed=SEED)
+    )
     study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
 
     best_trials_used = len(study.trials)
@@ -91,22 +98,18 @@ def tune_hyperparameters(X: pd.DataFrame, y: pd.Series, spec: ProblemSpec) -> Tu
     # rule-based, deterministic, no LLM — same spirit as
     # training_stage.py's rule-based failure_analysis in Phase 1.
 
+    # Converged = the best score was already reached BEFORE the final 20% of
+    # the trials, i.e. the last stretch of the search found nothing better.
+    # The earlier check was inverted: it called the search converged when the
+    # best score sat INSIDE the last 20% — exactly when it was still improving.
     tail = max(1, best_trials_used // 5)
-    recent_best = max(t.score for t in history[-tail:])
+    earlier = [t.score for t in history[:-tail]]
     overall_best = study.best_value
-
-    # `plateaued` is now the single source of truth for "did this search
-    # converge". It used to exist only as a throwaway expression inside the
-    # convergence_notes string below, while TuningResult exposed a SEPARATE
-    # `.converged` property derived from budget usage — which, because
-    # study.optimize() always runs exactly n_trials with no early stopping,
-    # was always False. Two unrelated notions of "converged" coexisted and
-    # the routing logic read the one that never fired. Now the text and the
-    # flag are computed once, here, from the same comparison.
-    plateaued = abs(recent_best - overall_best) < 1e-6
+    plateaued = bool(earlier) and max(earlier) >= overall_best - 1e-9
 
     convergence_notes = (
-        "score plateaued in the final trial - likely converged."
+        "score plateaued: the best result came before the final 20% of "
+        "trials - likely converged."
         if plateaued
         else "Score was still improving near the trial budget limit - "
         "consider a larger search_budget_total next run."

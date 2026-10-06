@@ -46,6 +46,7 @@ class TuningAgent:
         max_tuning_trials: Optional[int] = 25,
         pipeline_run: PipelineRun | None = None,
         cache: RunCache | None = None,
+        success_metric: Optional[str] = None,
     ) -> TuningAgentResult:
         run_id = pipeline_run.run_id if pipeline_run is not None else None
 
@@ -57,6 +58,7 @@ class TuningAgent:
                 max_tuning_trials=max_tuning_trials,
                 cache=cache,
                 run_id=run_id,
+                success_metric=success_metric,
             )
         except PipelineBlockedError as e:
             result = TuningAgentResult(

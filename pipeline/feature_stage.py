@@ -26,7 +26,19 @@ MAX_CATEGORICAL_CARDINALITY = 20
 def engineer_features(
     df: pd.DataFrame, profile: DataProfile, spec: ProblemSpec
 ) -> tuple[pd.DataFrame, pd.Series, EDAReport]:
-    """Compute correlations, drop low-signal/near-zero-variance columns,
+    """fit_features() without the replay plan — for callers that only need
+    the training matrix and the report."""
+    X, y, report, _plan = fit_features(df, profile, spec)
+    return X, y, report
+
+
+def fit_features(
+    df: pd.DataFrame, profile: DataProfile, spec: ProblemSpec
+) -> tuple[pd.DataFrame, pd.Series, EDAReport, dict]:
+    """Decide the feature set from `df` (the TRAIN rows) and return a plan
+    that apply_features() can replay on rows it has never seen.
+
+    Compute correlations, drop low-signal/near-zero-variance columns,
     flag leakage-risk columns, and return the final feature matrix + target.
 
     Parameters
@@ -43,9 +55,9 @@ def engineer_features(
 
     Returns
     -------
-    tuple[pd.DataFrame, pd.Series, EDAReport]
-        X (final feature matrix), y (target Series), and the EDAReport
-        describing every keep/drop/leakage decision made.
+    tuple[pd.DataFrame, pd.Series, EDAReport, dict]
+        X (final feature matrix), y (target Series), the EDAReport
+        describing every keep/drop/leakage decision made, and the plan.
     """
     y = df[spec.target_column]
     X = df.drop(columns=[spec.target_column])
@@ -77,6 +89,16 @@ def engineer_features(
     numeric_X = X.select_dtypes(include="number")
     candidate_frames: list[pd.DataFrame] = [numeric_X]
 
+    # What apply_features() needs to rebuild the same columns for new rows.
+    plan: dict = {
+        "numeric_cols": list(numeric_X.columns),
+        "bool_cols": [],
+        "datetime_cols": [],
+        "categorical": {},  # source column -> the dummy columns train produced
+        "keep_cols": [],
+        "interaction": None,  # (name, a, b)
+    }
+
     for col in X.columns:
         series = X[col]
 
@@ -90,6 +112,7 @@ def engineer_features(
         # not object/string/category either, so they used to vanish silently.)
         if pd.api.types.is_bool_dtype(series):
             candidate_frames.append(series.astype(int).to_frame(name=col))
+            plan["bool_cols"].append(col)
             continue
 
         if is_datetime_column(series):
@@ -126,6 +149,7 @@ def engineer_features(
                 )
 
             candidate_frames.append(derived)
+            plan["datetime_cols"].append(col)
             for derived_name in derived.columns:
                 engineered.append(
                     FeatureDecision(
@@ -163,6 +187,7 @@ def engineer_features(
             # coercing at every one of those call sites instead of once here.
             dummies = pd.get_dummies(series, prefix=col, dtype=float)
             candidate_frames.append(dummies)
+            plan["categorical"][col] = list(dummies.columns)
             engineered.append(
                 FeatureDecision(
                     name=f"{col}__onehot",
@@ -229,6 +254,7 @@ def engineer_features(
         a, b = ranked[0], ranked[1]
         interaction_name = f"{a}__x__{b}"
         final_X[interaction_name] = candidate_X[a] * candidate_X[b]
+        plan["interaction"] = (interaction_name, a, b)
         engineered.append(
             FeatureDecision(
                 name=interaction_name,
@@ -254,4 +280,47 @@ def engineer_features(
         target_distribution_notes=target_note,
         final_feature_names=list(final_X.columns),
     )
-    return final_X, y, report
+    plan["keep_cols"] = list(keep_cols)
+    return final_X, y, report, plan
+
+
+def _datetime_parts(series: pd.Series, col: str, index: pd.Index) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            f"{col}__year": series.dt.year,
+            f"{col}__month": series.dt.month,
+            f"{col}__day_of_week": series.dt.dayofweek,
+            f"{col}__is_weekend": (series.dt.dayofweek >= 5),
+        },
+        index=index,
+    ).astype(float)
+
+
+def apply_features(
+    df: pd.DataFrame, plan: dict, spec: ProblemSpec
+) -> tuple[pd.DataFrame, pd.Series]:
+    """Rebuild, for rows that took no part in fit_features(), exactly the
+    columns fit_features() chose — nothing is re-decided or re-learned here.
+
+    A category the train rows never contained simply gets 0 in every dummy
+    column; a category the train rows had but these rows lack gets an
+    all-zero column, so the layout always matches the training matrix.
+    """
+    y = df[spec.target_column]
+    X = df.drop(columns=[spec.target_column])
+
+    frames: list[pd.DataFrame] = [X[plan["numeric_cols"]]]
+    for col in plan["bool_cols"]:
+        frames.append(X[col].astype(int).to_frame(name=col))
+    for col in plan["datetime_cols"]:
+        frames.append(_datetime_parts(X[col], col, X.index))
+    for col, dummy_cols in plan["categorical"].items():
+        dummies = pd.get_dummies(X[col], prefix=col, dtype=float)
+        frames.append(dummies.reindex(columns=dummy_cols, fill_value=0.0))
+
+    candidate_X = pd.concat(frames, axis=1)
+    final_X = candidate_X[plan["keep_cols"]].copy()
+    if plan["interaction"] is not None:
+        name, a, b = plan["interaction"]
+        final_X[name] = candidate_X[a] * candidate_X[b]
+    return final_X, y

@@ -100,7 +100,9 @@ def load_data(spec: ProblemSpec) -> pd.DataFrame:
 
     raise ValueError(f"Unsupported data_source: {spec.data_source!r}")
 
-def clean_and_profile(df:pd.DataFrame, spec: ProblemSpec) -> tuple[pd.DataFrame, DataProfile]:
+def clean_and_profile(
+    df: pd.DataFrame, spec: ProblemSpec, impute: bool = True
+) -> tuple[pd.DataFrame, DataProfile]:
     """Clean the dataframe and produce a DataProfile describing what was done.
 
     Parameters
@@ -112,6 +114,12 @@ def clean_and_profile(df:pd.DataFrame, spec: ProblemSpec) -> tuple[pd.DataFrame,
     spec: ProblemSpec
         Needed for spec.target_column (which column is the label) and
         spec.task_type (whether to compute class_balance).
+    impute: bool
+        True (default): fill missing values using statistics of ALL rows —
+        fine for the descriptive DataProfile, but never for data a model
+        will be evaluated on. False: leave missing values in place, so the
+        caller can split first and impute from train rows only (see
+        split_and_clean()).
 
     Returns
     -------
@@ -176,7 +184,7 @@ def clean_and_profile(df:pd.DataFrame, spec: ProblemSpec) -> tuple[pd.DataFrame,
         missing_pct = df[col].isna().mean() * 100
         is_target = col == spec.target_column
 
-        if missing_pct > 0 and not is_target and pd.api.types.is_numeric_dtype(df[col]):
+        if impute and missing_pct > 0 and not is_target and pd.api.types.is_numeric_dtype(df[col]):
             median_val = df[col].median()
             df[col] = df[col].fillna(median_val)
             cleaning_actions.append(
@@ -197,7 +205,7 @@ def clean_and_profile(df:pd.DataFrame, spec: ProblemSpec) -> tuple[pd.DataFrame,
         # left untouched here and decomposed into numeric parts in
         # engineer_features() instead, so imputing them at this stage would
         # be inventing a timestamp nobody asked for.
-        elif missing_pct > 0 and not is_target and is_categorical_column(df[col]):
+        elif impute and missing_pct > 0 and not is_target and is_categorical_column(df[col]):
             mode_values = df[col].mode(dropna=True)
             # .mode() returns an EMPTY series when every value is NaN — there
             # is no most-frequent value to impute with, so leave the column
@@ -266,3 +274,54 @@ def clean_and_profile(df:pd.DataFrame, spec: ProblemSpec) -> tuple[pd.DataFrame,
         blocking_issue = blocking_issue,
     )
     return df, profile
+
+
+TEST_SIZE = 0.2
+SPLIT_SEED = 42
+
+
+def split_and_clean(
+    df: pd.DataFrame, spec: ProblemSpec
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Clean once, split once, and impute from TRAIN rows only.
+
+    This is the single train/test split of the whole pipeline. Everything
+    that learns something from data (imputation here, feature selection in
+    feature_stage.fit_features, the tuning CV) sees only the returned train
+    frame; the test frame is only ever transformed with what train taught,
+    so test rows never influence the model and the test metric stays honest.
+
+    Rows missing the target and exact duplicates are dropped BEFORE the
+    split (they are removed, not learned from, so nothing leaks). The split
+    is stratified for classification and seeded.
+    """
+    from sklearn.model_selection import train_test_split
+
+    df = df.dropna(subset=[spec.target_column]).drop_duplicates().reset_index(drop=True)
+    train_df, test_df = train_test_split(
+        df,
+        test_size=TEST_SIZE,
+        random_state=SPLIT_SEED,
+        stratify=df[spec.target_column] if spec.task_type == "classification" else None,
+    )
+    train_df = train_df.reset_index(drop=True)
+    test_df = test_df.reset_index(drop=True)
+
+    for col in train_df.columns:
+        if col == spec.target_column or not train_df[col].isna().any() and not test_df[col].isna().any():
+            continue
+        if pd.api.types.is_numeric_dtype(train_df[col]):
+            fill = train_df[col].median()
+        elif is_categorical_column(train_df[col]):
+            mode_values = train_df[col].mode(dropna=True)
+            if mode_values.empty:
+                continue
+            fill = mode_values.iloc[0]
+        else:
+            continue  # datetimes etc. are handled (and warned about) in feature_stage
+        if pd.isna(fill):
+            continue
+        train_df[col] = train_df[col].fillna(fill)
+        test_df[col] = test_df[col].fillna(fill)
+
+    return train_df, test_df

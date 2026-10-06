@@ -99,7 +99,9 @@ def test_valid_call_returns_tuning_result_with_correct_budget_accounting():
     assert isinstance(result, TuningResult)
     assert result.search_budget_total == 3
     assert result.search_budget_used == 3
-    assert result.metric_optimized == "f1_macro"
+    # No success_metric passed, so the tool falls back to accuracy — and the
+    # search now really optimises it (it used to be tuned on f1_macro regardless).
+    assert result.metric_optimized == "accuracy"
     assert result.best_params  # non-empty
     assert result.convergence_notes  # non-empty
     # converged is a real stored field now, not a budget comparison, so it

@@ -18,8 +18,8 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
-from pipeline.data_stage import clean_and_profile, load_data
-from pipeline.feature_stage import engineer_features
+from pipeline.data_stage import clean_and_profile, load_data, split_and_clean
+from pipeline.feature_stage import apply_features, fit_features
 from pipeline.run_cache import RunCache
 from pipeline.training_stage import train_and_evaluate
 from pipeline.tuning_stage import tune_hyperparameters
@@ -91,20 +91,28 @@ def train_and_evaluate_tool(
         constraints=PipelineConstraints(max_tuning_trials=max_tuning_trials),
     )
 
-    X = y = None
+    X = y = X_test = y_test = None
     if cache is not None and run_id is not None:
         X = cache.get(run_id, "X")
         y = cache.get(run_id, "y")
+        X_test = cache.get(run_id, "X_test")
+        y_test = cache.get(run_id, "y_test")
 
-    if X is None or y is None:
+    # A hit needs the train AND the test rows the feature stage produced;
+    # anything less recomputes, so train and test always come from one split.
+    if X is None or y is None or X_test is None or y_test is None:
         raw_df = load_data(spec)
-        cleaned_df, profile = clean_and_profile(raw_df, spec)
+        cleaned_df, profile = clean_and_profile(raw_df, spec, impute=False)
         if profile.blocking_issue is not None:
             raise PipelineBlockedError(stage="training_agent", reason=profile.blocking_issue)
-        X, y, _report = engineer_features(cleaned_df, profile, spec)
+        train_df, test_df = split_and_clean(cleaned_df, spec)
+        X, y, _report, plan = fit_features(train_df, profile, spec)
+        X_test, y_test = apply_features(test_df, plan, spec)
 
     if tuning_result is None:
         tuning_result = tune_hyperparameters(X, y, spec)
-    _model, eval_report = train_and_evaluate(X, y, spec, tuning_result)
+    _model, eval_report = train_and_evaluate(
+        X, y, spec, tuning_result, X_test=X_test, y_test=y_test
+    )
 
     return eval_report

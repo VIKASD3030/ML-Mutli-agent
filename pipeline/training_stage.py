@@ -32,13 +32,28 @@ from schemas.tuning_result import TuningResult
 HIGHER_IS_BETTER = {"accuracy", "f1", "precision", "recall", "roc_auc", "r2"}
 
 def train_and_evaluate(
-    X: pd.DataFrame, y: pd.Series, spec: ProblemSpec, tuning: TuningResult
+    X: pd.DataFrame,
+    y: pd.Series,
+    spec: ProblemSpec,
+    tuning: TuningResult,
+    X_test: pd.DataFrame | None = None,
+    y_test: pd.Series | None = None,
 ) -> tuple[object, EvaluationReport]:
+    """Fit on (X, y) and evaluate on the held-out (X_test, y_test).
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42,
-        stratify=y if spec.task_type == "classification" else None,
-    )
+    The pipeline makes its one train/test split up front (data_stage.
+    split_and_clean) and hands the test rows in here, so tuning and feature
+    selection never saw them. If no test rows are supplied this falls back to
+    splitting X/y itself — only for direct callers that did no earlier work
+    on those rows; the pipeline never relies on it.
+    """
+    if X_test is None or y_test is None:
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42,
+            stratify=y if spec.task_type == "classification" else None,
+        )
+    else:
+        X_train, y_train = X, y
 
     # tuning.best_params came from Optuna as plain floats/ints for each
     # hyperparameter — we copy them into a fresh dict rather than mutating
